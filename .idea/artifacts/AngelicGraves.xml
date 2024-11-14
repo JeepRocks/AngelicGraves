@@ -1,0 +1,8 @@
+<component name="ArtifactManager">
+  <artifact type="jar" name="AngelicGraves">
+    <output-path>$PROJECT_DIR$/out/artifacts/AngelicGraves</output-path>
+    <root id="archive" name="AngelicGraves.jar">
+      <element id="module-output" name="angelicgraves" />
+    </root>
+  </artifact>
+</component>

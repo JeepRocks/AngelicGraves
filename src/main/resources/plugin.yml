@@ -1,0 +1,7 @@
+name: Angelicgraves
+version: '1.0'
+main: com.jeepy.angelicgraves.Angelicgraves
+api-version: '1.21'
+authors: [ Jeepy ]
+description: Graves for AngelicMC
+website: https://store.angelicmc.org/
