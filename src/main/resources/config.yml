@@ -1,0 +1,6 @@
+# Chest Settings
+chestExpirationTime: 600
+
+# Particle settings
+soulParticlesEnabled: true
+haloParticlesEnabled: true

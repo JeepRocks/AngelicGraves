@@ -5,3 +5,5 @@ api-version: '1.21'
 authors: [ Jeepy ]
 description: Graves for AngelicMC
 website: https://store.angelicmc.org/
+softdepend:
+  - DecentHolograms
