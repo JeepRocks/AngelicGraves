@@ -34,9 +34,4 @@ public class GraveConfig {
     public boolean areHaloParticlesEnabled() {
         return haloParticlesEnabled;
     }
-
-    public void reloadConfig() {
-        plugin.reloadConfig();
-        loadConfig();
-    }
 }

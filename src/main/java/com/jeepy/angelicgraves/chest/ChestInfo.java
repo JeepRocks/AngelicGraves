@@ -6,20 +6,17 @@ import eu.decentsoftware.holograms.api.DHAPI;
 import eu.decentsoftware.holograms.api.holograms.Hologram;
 import org.bukkit.*;
 import org.bukkit.block.Block;
-import org.bukkit.inventory.ItemStack;
 import org.bukkit.plugin.Plugin;
 import org.bukkit.scheduler.BukkitTask;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Queue;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public class ChestInfo {
     private static final AtomicInteger HOLOGRAM_COUNTER = new AtomicInteger(0);
 
-    // Core fields
     private final UUID playerUUID;
     private final String causeOfDeath;
     private final Location chestLocation;
@@ -27,13 +24,11 @@ public class ChestInfo {
     private final PlayerDeathEventListener listener;
     private final GraveConfig graveConfig;
 
-    // Visual effect fields
     private Hologram hologram;
     private double haloAngle = 0;
     private BukkitTask updateTask;
     private BukkitTask particleTask;
 
-    // State
     private boolean isRemoved = false;
 
     public ChestInfo(UUID playerUUID, String causeOfDeath, Location chestLocation,
@@ -49,7 +44,7 @@ public class ChestInfo {
         createHologram();
         startUpdateTask();
         startParticleTask();
-        }
+    }
 
     private void createHologram() {
         String hologramName = "deathChest" + HOLOGRAM_COUNTER.incrementAndGet();
@@ -134,7 +129,6 @@ public class ChestInfo {
     public void removeChest() {
         if (isRemoved) return;
         isRemoved = true;
-
         if (updateTask != null) {
             updateTask.cancel();
         }
@@ -213,28 +207,6 @@ public class ChestInfo {
         if (cause.contains("wither")) return "☠";
         if (cause.contains("slain") || cause.contains("killed")) return "⚔";
         return "✞";
-    }
-
-    public void cleanupAllEffects() {
-        // Cancel all tasks
-        if (updateTask != null) {
-            updateTask.cancel();
-            updateTask = null;
-        }
-        if (particleTask != null) {
-            particleTask.cancel();
-            particleTask = null;
-        }
-        // Remove hologram
-        if (hologram != null) {
-            hologram.delete();
-            hologram = null;
-        }
-    }
-
-    // Getters
-    public Location getChestLocation() {
-        return chestLocation;
     }
 
     public UUID getPlayerUUID() {

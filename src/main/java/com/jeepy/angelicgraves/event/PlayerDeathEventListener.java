@@ -1,10 +1,9 @@
 package com.jeepy.angelicgraves.event;
 
-import com.jeepy.angelicgraves.Angelicgraves;
-import com.jeepy.angelicgraves.util.AngelicDatabase;
+import com.google.gson.Gson;
+import com.google.gson.JsonSyntaxException;
 import com.jeepy.angelicgraves.chest.ChestInfo;
 import com.jeepy.angelicgraves.config.GraveConfig;
-import com.jeepy.angelicgraves.util.QueueManager;
 import org.bukkit.*;
 import org.bukkit.block.Block;
 import org.bukkit.block.Chest;
@@ -17,42 +16,27 @@ import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.scheduler.BukkitTask;
 
+import java.io.*;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
 
 public class PlayerDeathEventListener implements Listener {
+    private final Map<Location, Queue<ItemStack>> chestQueues = new ConcurrentHashMap<>();
+    private final Map<Location, ChestInfo> chestInfos = new ConcurrentHashMap<>();
     private final GraveConfig graveConfig;
     private final Map<Location, BukkitTask> queueProcessingTasks = new HashMap<>();
-    private final AngelicDatabase database;
-    private final QueueManager queueManager;
-    private final Angelicgraves plugin;
+    private final Gson gson = new Gson();
 
-    public PlayerDeathEventListener(GraveConfig graveConfig, AngelicDatabase database, QueueManager queueManager, Angelicgraves plugin) {
+    public PlayerDeathEventListener(GraveConfig graveConfig) {
         this.graveConfig = graveConfig;
-        this.database = database;
-        this.queueManager = queueManager;
-        this.plugin = plugin;
     }
 
     @EventHandler
     public void onPlayerDeath(PlayerDeathEvent event) {
         Player player = event.getEntity();
-        ItemStack[] items = player.getInventory().getContents();
-
-        // Check if player has any items
-        boolean hasItems = false;
-        for (ItemStack item : items) {
-            if (item != null && item.getType() != Material.AIR) {
-                hasItems = true;
-                break;
-            }
-        }
-
-        // Don't create chest if player has no items
-        if (!hasItems) {
-            return;
-        }
-
         Location location = player.getLocation();
+        ItemStack[] items = player.getInventory().getContents();
         Location chestLocation = findSafeLocation(location);
         Block block = chestLocation.getBlock();
         block.setType(Material.CHEST);
@@ -67,12 +51,9 @@ public class PlayerDeathEventListener implements Listener {
         }
 
         ChestInfo chestInfo = new ChestInfo(player.getUniqueId(), event.getDeathMessage(), chestLocation, expirationTime, this, graveConfig);
-        plugin.registerGrave(chestLocation, chestInfo);
-
+        chestInfos.put(chestLocation, chestInfo);
         Queue<ItemStack> itemQueue = new LinkedList<>();
-        queueManager.addQueue(chestLocation, itemQueue);
-        database.saveGrave(player.getUniqueId(), chestLocation, expirationTime, event.getDeathMessage(), itemQueue);
-
+        chestQueues.put(chestLocation, itemQueue);
 
         for (ItemStack item : items) {
             if (item != null && item.getType() != Material.AIR) {
@@ -86,13 +67,12 @@ public class PlayerDeathEventListener implements Listener {
 
         event.getDrops().clear();
         Bukkit.getLogger().info("Death chest spawned at: " + chestLocation);
-
         processQueue(chestInventory, block, chestInfo, itemQueue);
         BukkitTask queueTask = scheduleQueueProcessing(block, chestInventory, chestInfo, itemQueue);
         queueProcessingTasks.put(chestLocation, queueTask);
 
+        long removalTimeTicks = graveConfig.getChestExpirationTime() * 20;
         Location finalChestLocation = chestLocation;
-
         Bukkit.getScheduler().runTaskLater(Bukkit.getPluginManager().getPlugin("Angelicgraves"), () -> {
             if (chestInventory.isEmpty() && itemQueue.isEmpty()) {
                 block.setType(Material.AIR);
@@ -100,14 +80,14 @@ public class PlayerDeathEventListener implements Listener {
                 cleanupChestData(finalChestLocation);
                 Bukkit.getLogger().info("Death chest at " + finalChestLocation + " has been removed after " + graveConfig.getChestExpirationTime() + " seconds.");
             }
-        }, graveConfig.getChestExpirationTime() * 20);
+        }, removalTimeTicks);
     }
 
     @EventHandler
     public void onBlockBreak(BlockBreakEvent event) {
         Block block = event.getBlock();
         if (block.getType() == Material.CHEST) {
-            ChestInfo chestInfo = plugin.getGrave(block.getLocation());
+            ChestInfo chestInfo = chestInfos.get(block.getLocation());
             if (chestInfo != null) {
                 chestInfo.removeChest();
                 cleanupChestData(block.getLocation());
@@ -117,10 +97,17 @@ public class PlayerDeathEventListener implements Listener {
     }
 
     public void cleanupChestData(Location chestLocation) {
-        queueManager.removeQueue(chestLocation);
-        plugin.unregisterGrave(chestLocation);
+        chestQueues.remove(chestLocation);
+        chestInfos.remove(chestLocation);
         cancelQueueProcessing(chestLocation);
-        database.removeGrave(chestLocation);
+
+        try {
+            File graveDataFile = new File(Bukkit.getPluginManager().getPlugin("Angelicgraves").getDataFolder(), "graves.json");
+            saveGraves(graveDataFile);
+            Bukkit.getLogger().info("Updated saved graves after removing grave at " + chestLocation);
+        } catch (IOException e) {
+            Bukkit.getLogger().warning("Failed to update saved graves after removing grave at " + chestLocation + ": " + e.getMessage());
+        }
     }
 
     private void processQueue(Inventory chestInventory, Block block, ChestInfo chestInfo, Queue<ItemStack> itemQueue) {
@@ -129,20 +116,124 @@ public class PlayerDeathEventListener implements Listener {
             return;
         }
 
-        Queue<ItemStack> queue = queueManager.getQueue(block.getLocation());
-        if (queue != null) {
-            while (!queue.isEmpty() && chestInventory.firstEmpty() != -1) {
-                chestInventory.addItem(queue.poll());
-            }
-
-            if (chestInventory.isEmpty() && queue.isEmpty()) {
-                block.setType(Material.AIR);
-                chestInfo.removeHologram();
-                chestInfo.removeChest();
-                cleanupChestData(block.getLocation());
-                Bukkit.getLogger().info("Death chest at " + block.getLocation() + " has been removed.");
-            }
+        while (!itemQueue.isEmpty() && chestInventory.firstEmpty() != -1) {
+            chestInventory.addItem(itemQueue.poll());
         }
+
+        if (chestInventory.isEmpty() && itemQueue.isEmpty()) {
+            block.setType(Material.AIR);
+            cleanupChestData(block.getLocation());
+            chestInfo.removeChest();
+            Bukkit.getLogger().info("Death chest at " + block.getLocation() + " has been removed.");
+        }
+    }
+
+    public void saveGraves(File file) throws IOException {
+        List<Map<String, Object>> graveData = chestInfos.entrySet().stream().map(entry -> {
+            Location loc = entry.getKey();
+            ChestInfo info = entry.getValue();
+            Map<String, Object> graveMap = new HashMap<>();
+            graveMap.put("playerUUID", info.getPlayerUUID().toString());
+            graveMap.put("causeOfDeath", info.getCauseOfDeath());
+            graveMap.put("chestLocation", serializeLocation(loc));
+            graveMap.put("expirationTime", info.getExpirationTime());
+
+            Queue<ItemStack> items = chestQueues.get(loc);
+            if (items != null) {
+                graveMap.put("items", items.stream().map(this::serializeItem).collect(Collectors.toList()));
+            }
+            return graveMap;
+        }).collect(Collectors.toList());
+
+        try (Writer writer = new FileWriter(file)) {
+            gson.toJson(graveData, writer);
+        }
+    }
+
+    public void loadGraves(File file) throws IOException {
+        try (Reader reader = new FileReader(file)) {
+            List<Map<String, Object>> graveData = gson.fromJson(reader, List.class);
+            long currentTime = System.currentTimeMillis();
+
+            for (Map<String, Object> graveMap : graveData) {
+                if (validateGraveData(graveMap)) {
+                    UUID playerUUID = UUID.fromString((String) graveMap.get("playerUUID"));
+                    String causeOfDeath = (String) graveMap.get("causeOfDeath");
+                    Location chestLocation = deserializeLocation((Map<String, Object>) graveMap.get("chestLocation"));
+                    long expirationTime = ((Double) graveMap.get("expirationTime")).longValue();
+
+                    ChestInfo chestInfo = new ChestInfo(playerUUID, causeOfDeath, chestLocation, expirationTime, this, graveConfig);
+                    chestInfos.put(chestLocation, chestInfo);
+
+                    List<Map<String, Object>> serializedItems = (List<Map<String, Object>>) graveMap.get("items");
+                    Queue<ItemStack> itemQueue = serializedItems.stream()
+                            .map(this::deserializeItem)
+                            .collect(Collectors.toCollection(LinkedList::new));
+                    chestQueues.put(chestLocation, itemQueue);
+
+                    Block block = chestLocation.getBlock();
+                    if (block.getType() == Material.CHEST) {
+                        Chest chest = (Chest) block.getState();
+                        Inventory chestInventory = chest.getBlockInventory();
+
+                        scheduleQueueProcessing(block, chestInventory, chestInfo, itemQueue);
+
+                        long timeLeft = expirationTime - currentTime;
+                        if (timeLeft > 0) {
+                            Bukkit.getScheduler().runTaskLater(Bukkit.getPluginManager().getPlugin("Angelicgraves"), () -> {
+                                if (chestInventory.isEmpty() && itemQueue.isEmpty()) {
+                                    block.setType(Material.AIR);
+                                    chestInfo.removeHologram();
+                                    cleanupChestData(chestLocation);
+                                    Bukkit.getLogger().info("Death chest at " + chestLocation + " has been removed.");
+                                }
+                            }, timeLeft / 50L);
+                        } else {
+
+                            cleanupChestData(chestLocation);
+                        }
+                    }
+                }
+            }
+        } catch (JsonSyntaxException e) {
+            Bukkit.getLogger().warning("Failed to load graves: Invalid JSON format.");
+        }
+    }
+
+
+    private boolean validateGraveData(Map<String, Object> graveMap) {
+        return graveMap.containsKey("playerUUID") &&
+                graveMap.containsKey("causeOfDeath") &&
+                graveMap.containsKey("chestLocation") &&
+                graveMap.containsKey("expirationTime");
+    }
+
+    private Map<String, Object> serializeLocation(Location location) {
+        Map<String, Object> map = new HashMap<>();
+        map.put("world", location.getWorld().getName());
+        map.put("x", location.getX());
+        map.put("y", location.getY());
+        map.put("z", location.getZ());
+        return map;
+    }
+
+    private Location deserializeLocation(Map<String, Object> map) {
+        World world = Bukkit.getWorld((String) map.get("world"));
+        if (world == null) {
+            throw new IllegalArgumentException("World not found: " + map.get("world"));
+        }
+        double x = (Double) map.get("x");
+        double y = (Double) map.get("y");
+        double z = (Double) map.get("z");
+        return new Location(world, x, y, z);
+    }
+
+    private Map<String, Object> serializeItem(ItemStack item) {
+        return item.serialize();
+    }
+
+    private ItemStack deserializeItem(Map<String, Object> map) {
+        return ItemStack.deserialize(map);
     }
 
     private BukkitTask scheduleQueueProcessing(Block block, Inventory chestInventory, ChestInfo chestInfo, Queue<ItemStack> itemQueue) {
@@ -160,54 +251,6 @@ public class PlayerDeathEventListener implements Listener {
         if (task != null) {
             task.cancel();
         }
-    }
-
-    public void saveAllChestInfos() {
-        for (Map.Entry<Location, ChestInfo> entry : plugin.getActiveGraves().entrySet()) {
-            ChestInfo chestInfo = entry.getValue();
-            database.saveGrave(chestInfo.getPlayerUUID(), chestInfo.getChestLocation(),
-                    chestInfo.getExpirationTime(), chestInfo.getCauseOfDeath(),
-                    queueManager.getQueue(chestInfo.getChestLocation()));
-        }
-    }
-
-
-    public void recreateGraves(List<AngelicDatabase.GraveData> graves) {
-        for (AngelicDatabase.GraveData graveData : graves) {
-            Location chestLocation = graveData.location();
-            Block block = chestLocation.getBlock();
-
-            if (block.getType() != Material.CHEST) {
-                block.setType(Material.CHEST);
-            }
-
-            Chest chest = (Chest) block.getState();
-            Inventory chestInventory = chest.getBlockInventory();
-
-            ChestInfo chestInfo = new ChestInfo(
-                    graveData.playerUUID(),
-                    graveData.causeOfDeath(),
-                    chestLocation,
-                    graveData.expirationTime(),
-                    this,
-                    graveConfig
-            );
-
-            plugin.registerGrave(chestLocation, chestInfo);
-
-            Queue<ItemStack> itemQueue = new LinkedList<>(graveData.items());
-            queueManager.addQueue(chestLocation, itemQueue);
-            processQueue(chestInventory, block, chestInfo, itemQueue);
-
-            Bukkit.getLogger().info("Recreated grave at " + chestLocation + " for player " + graveData.playerUUID());
-        }
-    }
-
-    public void cancelAllTasks() {
-        for (BukkitTask task : queueProcessingTasks.values()) {
-            task.cancel();
-        }
-        queueProcessingTasks.clear();
     }
 
     private Location findSafeLocation(Location location) {
